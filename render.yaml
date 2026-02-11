@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: estreamly-scraper
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scraper_improved.py
+    envVars:
+      - key: AUTHORIZED_USERS
+        value: admin:changeme123,user1:password1
+      - key: PORT
+        value: 10000
