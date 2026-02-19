@@ -134,78 +134,120 @@ def scrape(url):
         
         # Extract price
         price = ""
-        # Try multiple price patterns
+        # Try multiple price patterns - prioritize numeric JSON first (most accurate)
         patterns = [
-            r'"price":\s*"([^"]+)"',
-            r'"price":\s*([0-9.]+)',
-            r'itemprop=["\']price["\']\s+content=["\']([^"\']+)["\']',
-            r'\$\s*([0-9,]+\.?[0-9]*)'
+            r'"price":\s*([0-9.]+)',  # JSON price as number (most reliable - matches first occurrence)
+            r'"price":\s*"([^"]+)"',  # JSON price as string
+            r'itemprop=["\']price["\']\s+content=["\']([^"\']+)["\']',  # Schema.org
+            r'\$\s*([0-9,]+\.?[0-9]*)'  # Dollar sign (least reliable - fallback)
         ]
         for pattern in patterns:
-            m = re.search(pattern, html_content)
-            if m:
-                price = m.group(1)
+            matches = re.findall(pattern, html_content)
+            if matches:
+                # For numeric JSON pattern, take first match (main product)
+                # For others, also take first match
+                price = matches[0]
                 break
         
-        # Extract image - prioritize high-resolution images
+        # Extract image - prioritize product-specific images
         image = ""
         
-        # First, try to find images from srcset (which often has multiple sizes)
-        srcset_pattern = r'srcset=["\']([^"\']+)["\']'
-        srcset_matches = re.findall(srcset_pattern, html_content, re.IGNORECASE)
-        largest_image = ""
-        largest_width = 0
+        # Skip keywords for filtering out non-product images
+        skip_keywords = ['thumbnail', '_thumb', 'placeholder', 'loading', 'icon', 'logo', 
+                        '_sm.', '_xs.', '/thumb/', 'header', 'footer', 'banner', 
+                        'crest', 'horizontal', 'logo', 'brand', 'site']
         
-        for srcset in srcset_matches:
-            # Parse srcset: "image1.jpg 300w, image2.jpg 600w, image3.jpg 1200w"
-            sources = srcset.split(',')
-            for source in sources:
-                parts = source.strip().split()
-                if len(parts) >= 2:
-                    img_url = parts[0]
-                    width_str = parts[1]
-                    # Extract width number
-                    width_match = re.search(r'(\d+)w', width_str)
-                    if width_match:
-                        width = int(width_match.group(1))
-                        if width > largest_width and 'thumbnail' not in img_url.lower():
-                            largest_width = width
-                            largest_image = img_url
+        # PRIORITY 1: og:image meta tag (most reliable for product pages)
+        og_image_patterns = [
+            r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\'](https?://[^"\']+)["\']',
+            r'<meta[^>]*content=["\'](https?://[^"\']+)["\'][^>]*property=["\']og:image["\']',
+        ]
+        for pattern in og_image_patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE)
+            if match:
+                img_url = match.group(1)
+                # Make sure it's not a logo
+                if not any(skip in img_url.lower() for skip in skip_keywords):
+                    image = img_url
+                    break
         
-        if largest_image:
-            image = largest_image
-        
-        # If no srcset found, try multiple image sources in order of priority
+        # PRIORITY 2: JSON-LD structured data (Shopify stores use this)
         if not image:
-            image_patterns = [
-                # Look for high-res media URLs (like Fischer Sports)
-                r'["\'](https?://[^"\']*\/media\/\d{3,4}x\d{3,4}/[^"\']+\.(?:jpg|jpeg|png|webp))["\']',
-                # Look for high-res product images
-                r'<meta[^>]*property=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
-                r'<meta[^>]*content=["\']([^"\']+)["\']\s+property=["\']og:image["\']',
-                # Look for product image in JSON-LD
-                r'"image":\s*"([^"]+)"',
-                r'"image":\s*\[\s*"([^"]+)"',
-                # Look for main product image
-                r'<img[^>]*class=["\'][^"\']*product[^"\']*["\'][^>]*src=["\']([^"\']+)["\']',
-                r'<img[^>]*id=["\'].*?product.*?["\'][^>]*src=["\']([^"\']+)["\']',
-                # Generic image with data-src (lazy loading)
-                r'<img[^>]*data-src=["\']([^"\']+)["\']',
+            jsonld_patterns = [
+                r'"image":\s*"(https?://[^"]+)"',
+                r'"image":\s*\[\s*"(https?://[^"]+)"',
             ]
-            
-            for pattern in image_patterns:
+            for pattern in jsonld_patterns:
                 matches = re.findall(pattern, html_content, re.IGNORECASE)
-                for match in matches:
-                    # Skip thumbnails, small images, and placeholder images
-                    if any(skip in match.lower() for skip in ['thumbnail', '_thumb', 'placeholder', 'loading', 'icon', 'logo', '_sm', '_xs', '/thumb/']):
-                        continue
-                    # Skip very small dimension indicators
-                    if re.search(r'_?\d{1,3}x\d{1,3}[._]', match):
-                        continue
-                    # Prefer larger dimension images
-                    if re.search(r'/\d{3,4}x\d{3,4}/', match) or not re.search(r'x\d+', match):
-                        image = match
+                for img_url in matches:
+                    if not any(skip in img_url.lower() for skip in skip_keywords):
+                        image = img_url
                         break
+                if image:
+                    break
+        
+        # PRIORITY 3: Product-specific image selectors
+        if not image:
+            product_patterns = [
+                # Shopify product images
+                r'<img[^>]*class=["\'][^"\']*product-image[^"\']*["\'][^>]*src=["\']([^"\']+)["\']',
+                r'<img[^>]*class=["\'][^"\']*product__media[^"\']*["\'][^>]*src=["\']([^"\']+)["\']',
+                r'<img[^>]*class=["\'][^"\']*featured-media[^"\']*["\'][^>]*src=["\']([^"\']+)["\']',
+                # Main product image by ID
+                r'<img[^>]*id=["\']product-image[^"\']*["\'][^>]*src=["\']([^"\']+)["\']',
+                # High-res media URLs
+                r'["\'](https?://[^"\']*\/media\/\d{3,4}x\d{3,4}/[^"\']+\.(?:jpg|jpeg|png|webp))["\']',
+            ]
+            for pattern in product_patterns:
+                matches = re.findall(pattern, html_content, re.IGNORECASE)
+                for img_url in matches:
+                    if not any(skip in img_url.lower() for skip in skip_keywords):
+                        # Skip very small images
+                        if not re.search(r'_?\d{1,3}x\d{1,3}[._]', img_url):
+                            image = img_url
+                            break
+                if image:
+                    break
+        
+        # PRIORITY 4: srcset images (look for largest, but skip logos)
+        if not image:
+            srcset_pattern = r'srcset=["\']([^"\']+)["\']'
+            srcset_matches = re.findall(srcset_pattern, html_content, re.IGNORECASE)
+            largest_image = ""
+            largest_width = 0
+            
+            for srcset in srcset_matches:
+                sources = srcset.split(',')
+                for source in sources:
+                    parts = source.strip().split()
+                    if len(parts) >= 2:
+                        img_url = parts[0]
+                        width_str = parts[1]
+                        width_match = re.search(r'(\d+)w', width_str)
+                        if width_match:
+                            width = int(width_match.group(1))
+                            # Skip logos and thumbnails, prefer largest
+                            if width > largest_width and not any(skip in img_url.lower() for skip in skip_keywords):
+                                largest_width = width
+                                largest_image = img_url
+            
+            if largest_image:
+                image = largest_image
+        
+        # PRIORITY 5: Fallback to any large image
+        if not image:
+            fallback_patterns = [
+                r'<img[^>]*data-src=["\'](https?://[^"\']+)["\']',
+                r'<img[^>]*src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']',
+            ]
+            for pattern in fallback_patterns:
+                matches = re.findall(pattern, html_content, re.IGNORECASE)
+                for img_url in matches:
+                    if not any(skip in img_url.lower() for skip in skip_keywords):
+                        # Prefer larger images
+                        if re.search(r'/\d{3,4}x\d{3,4}/', img_url) or '_600x.' in img_url or '_800x.' in img_url:
+                            image = img_url
+                            break
                 if image:
                     break
         
@@ -298,11 +340,13 @@ HTML = """<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; min-height: 100vh; }
-        .header { background: white; border-bottom: 1px solid #e5e7eb; padding: 16px 32px; display: flex; align-items: center; gap: 12px; }
-        .header-logo { width: 32px; height: 32px; }
-        .header-logo img { width: 100%; height: 100%; object-fit: contain; }
-        .header-title { font-size: 16px; font-weight: 600; color: #111827; }
+    .header { background: white; border-bottom: 1px solid #e5e7eb; padding: 16px 32px; display: flex; align-items: center; gap: 12px; }
+        .header-logo { width: 36px; height: 36px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+        .header-logo svg { width: 24px; height: 24px; }
+        .header-title { font-size: 18px; font-weight: 700; color: #1a1a2e; }
         .header-subtitle { font-size: 13px; color: #6b7280; margin-left: auto; }
+        .logout-btn { font-size: 13px; color: #667eea; text-decoration: none; padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 6px; transition: all 0.2s; }
+        .logout-btn:hover { background: #f5f7fa; border-color: #667eea; }
         .container { max-width: 1200px; margin: 0 auto; padding: 32px; }
         .page-title { font-size: 24px; font-weight: 600; color: #111827; margin-bottom: 8px; }
         .page-description { font-size: 14px; color: #6b7280; margin-bottom: 24px; }
@@ -333,9 +377,12 @@ HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <div class="header-logo"><img src="data:image/png;base64,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" alt="eStreamly"></div>
+        <div class="header-logo">
+            <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly" style="width: 24px; height: 24px; object-fit: contain; border-radius: 4px;">
+        </div>
         <div class="header-title">eStreamly</div>
         <div class="header-subtitle">Product Scraper</div>
+        <a href="/logout" class="logout-btn">Sign Out</a>
     </div>
     <div class="container">
         <h1 class="page-title">Product Scraper</h1>
@@ -378,42 +425,252 @@ HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# Professional Login Page HTML
+LOGIN_HTML = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - eStreamly Product Scraper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 420px;
+            padding: 48px 40px;
+            text-align: center;
+        }
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+        .logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            filter: brightness(0) invert(1);
+        }
+        .brand-name {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+        }
+        .product-name {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 32px;
+            font-weight: 500;
+        }
+        .welcome-text {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 32px;
+        }
+        .form-group {
+            text-align: left;
+            margin-bottom: 20px;
+        }
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #444;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e8e8e8;
+            border-radius: 10px;
+            font-size: 15px;
+            transition: all 0.2s;
+            background: #fafafa;
+        }
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+            background: white;
+            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+        }
+        .form-input::placeholder {
+            color: #aaa;
+        }
+        .signin-btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 12px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        .signin-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+        }
+        .signin-btn:active {
+            transform: translateY(0);
+        }
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            border-left: 4px solid #c33;
+            display: none;
+        }
+        .error-message.show {
+            display: block;
+        }
+        .footer-text {
+            margin-top: 32px;
+            font-size: 12px;
+            color: #999;
+        }
+        @media (max-width: 480px) {
+            .login-container {
+                padding: 36px 24px;
+            }
+            .brand-name {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly Logo" style="width: 48px; height: 48px; object-fit: contain;">
+        </div>
+        <div class="brand-name">eStreamly</div>
+        <div class="product-name">Product Scraper</div>
+        <div class="welcome-text">Welcome back</div>
+        <div class="subtitle">Sign in to access your scraper</div>
+        <div class="error-message" id="errorMsg">Invalid username or password</div>
+        <form method="POST" action="/login" onsubmit="return handleSubmit(event)">
+            <div class="form-group">
+                <label class="form-label" for="username">Username</label>
+                <input type="text" id="username" name="username" class="form-input" placeholder="Enter your username" required autofocus>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">Password</label>
+                <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" required>
+            </div>
+            <button type="submit" class="signin-btn">Sign In</button>
+        </form>
+        <div class="footer-text">Secure authentication</div>
+    </div>
+    <script>
+        function handleSubmit(e) {
+            return true;
+        }
+        // Show error if redirected with error param
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('error')) {
+            document.getElementById('errorMsg').classList.add('show');
+        }
+    </script>
+</body>
+</html>'''
+
 class ScrapeHandler(BaseHTTPRequestHandler):
     # Store the last generated filename for download
     last_csv_file = None
+    # Simple session storage
+    active_sessions = set()
     
     def check_auth(self):
-        """Check if request has valid authentication"""
-        auth_header = self.headers.get('Authorization')
-        if not auth_header:
-            return False
-        
-        try:
-            # Parse Basic Auth header
-            auth_type, auth_string = auth_header.split(' ', 1)
-            if auth_type.lower() != 'basic':
-                return False
-            
-            # Decode credentials
-            decoded = base64.b64decode(auth_string).decode('utf-8')
-            username, password = decoded.split(':', 1)
-            
-            # Check against authorized users
-            return AUTHORIZED_USERS.get(username) == password
-        except:
-            return False
+        """Check if request has valid session cookie"""
+        cookie_header = self.headers.get('Cookie')
+        if cookie_header:
+            # Look for session cookie
+            cookies = cookie_header.split(';')
+            for cookie in cookies:
+                cookie = cookie.strip()
+                if cookie.startswith('session='):
+                    session_id = cookie.split('=', 1)[1]
+                    return session_id in self.active_sessions
+        return False
     
     def require_auth(self):
-        """Send 401 response requiring authentication"""
-        self.send_response(401)
-        self.send_header('WWW-Authenticate', 'Basic realm="eStreamly Product Scraper"')
-        self.send_header('Content-type', 'text/html')
+        """Redirect to login page"""
+        self.send_response(302)
+        self.send_header('Location', '/login')
         self.end_headers()
-        self.wfile.write(b'<html><body><h1>401 Unauthorized</h1><p>Authentication required.</p></body></html>')
+    
+    def set_session_cookie(self):
+        """Create and set a session cookie"""
+        import uuid
+        session_id = str(uuid.uuid4())
+        self.active_sessions.add(session_id)
+        return session_id
+    
+    def clear_session(self):
+        """Clear the session cookie"""
+        cookie_header = self.headers.get('Cookie')
+        if cookie_header:
+            cookies = cookie_header.split(';')
+            for cookie in cookies:
+                cookie = cookie.strip()
+                if cookie.startswith('session='):
+                    session_id = cookie.split('=', 1)[1]
+                    self.active_sessions.discard(session_id)
     
     def do_GET(self):
-        """Serve the main page or download CSV"""
-        # Check authentication
+        """Serve the main page, login page, or download CSV"""
+        # Public endpoints that don't require auth
+        if self.path == '/login':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(LOGIN_HTML.encode('utf-8'))
+            return
+        
+        if self.path == '/logout':
+            self.clear_session()
+            self.send_response(302)
+            self.send_header('Location', '/login')
+            self.send_header('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
+            self.end_headers()
+            return
+        
+        # Check authentication for protected endpoints
         if not self.check_auth():
             self.require_auth()
             return
@@ -445,8 +702,36 @@ class ScrapeHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Page not found")
     
     def do_POST(self):
-        """Handle scraping request"""
-        # Check authentication
+        """Handle login or scraping request"""
+        # Handle login form submission
+        if self.path == '/login':
+            try:
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                parsed_data = urllib.parse.parse_qs(post_data)
+                
+                username = parsed_data.get('username', [''])[0]
+                password = parsed_data.get('password', [''])[0]
+                
+                # Validate credentials
+                if AUTHORIZED_USERS.get(username) == password:
+                    # Create session
+                    session_id = self.set_session_cookie()
+                    self.send_response(302)
+                    self.send_header('Location', '/')
+                    self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                    self.end_headers()
+                else:
+                    # Invalid credentials - redirect back to login with error
+                    self.send_response(302)
+                    self.send_header('Location', '/login?error=1')
+                    self.end_headers()
+                return
+            except Exception as e:
+                self.send_error(400, f"Login error: {str(e)}")
+                return
+        
+        # Check authentication for protected endpoints
         if not self.check_auth():
             self.require_auth()
             return
@@ -874,12 +1159,13 @@ def main():
     except:
         pass
     
-    print("\n🔐 Authentication enabled - use authorized credentials")
+    print("\n🔐 Authentication enabled - login required")
     print("\n💡 Instructions:")
     print("   1. Open the URL above in your browser")
-    print("   2. Enter username and password when prompted")
+    print("   2. Sign in with your credentials on the login page")
     print("   3. Paste product URLs (one per line)")
-    print("   4. Click 'Scrape Products'")
+    print("   4. Click 'Start Scraping'")
+    print("   5. Download your XLSX file")
     print("   5. Results will be saved as XLSX")
     
     print("\n⚠️  Press Ctrl+C to stop the server")
