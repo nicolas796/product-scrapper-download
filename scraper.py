@@ -397,9 +397,14 @@ HTML = """<!DOCTYPE html>
         .alert-title { font-size: 14px; font-weight: 600; color: #92400e; margin-bottom: 4px; }
         .alert-text { font-size: 13px; color: #92400e; line-height: 1.5; }
         .form-label { display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px; }
-        textarea { width: 100%; min-height: 200px; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-family: monospace; font-size: 13px; resize: vertical; transition: all 0.2s; background: #f9fafb; }
-        textarea:focus { outline: none; border-color: #6366f1; background: white; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        textarea::placeholder { color: #9ca3af; }
+        .url-field { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+        .url-input { flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; transition: all 0.2s; background: #f9fafb; }
+        .url-input:focus { outline: none; border-color: #6366f1; background: white; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
+        .url-input::placeholder { color: #9ca3af; }
+        .btn-remove { background: #fee; color: #c33; border: none; border-radius: 6px; width: 32px; height: 32px; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        .btn-remove:hover { background: #fcc; }
+        .btn-secondary { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer; transition: all 0.2s; margin-bottom: 16px; }
+        .btn-secondary:hover { background: #e5e7eb; }
         .url-count { font-size: 13px; color: #6b7280; margin-top: 8px; }
         .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; width: 100%; margin-top: 16px; }
         .btn-primary { background: #6366f1; color: white; }
@@ -437,15 +442,33 @@ HTML = """<!DOCTYPE html>
         <div class="instructions">
             <div class="instructions-title">How to Use</div>
             <ol class="instructions-list">
-                <li>Paste product URLs in the text area below (one URL per line)</li>
+                <li>Enter one product URL per field below</li>
+                <li>Click "Add URL" for more products (up to 20)</li>
                 <li>Click "Start Scraping" to extract product information</li>
                 <li>Download your results as an XLSX file</li>
             </ol>
         </div>
         <div class="card">
-            <form method="POST" action="/scrape">
-                <label class="form-label" for="urls">Product URLs</label>
-                <textarea id="urls" name="urls" placeholder="https://www.shopify-store.com/products/example-product&#10;https://www.brand-website.com/shop/cool-item&#10;https://www.ecommerce-site.com/p/best-seller" oninput="updateCount()"></textarea>
+            <form method="POST" action="/scrape" id="scrapeForm">
+                <label class="form-label">Product URLs</label>
+                <div id="urlFields">
+                    <div class="url-field">
+                        <input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()">
+                    </div>
+                    <div class="url-field">
+                        <input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()">
+                    </div>
+                    <div class="url-field">
+                        <input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()">
+                    </div>
+                    <div class="url-field">
+                        <input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()">
+                    </div>
+                    <div class="url-field">
+                        <input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()">
+                    </div>
+                </div>
+                <button type="button" class="btn btn-secondary" id="addUrlBtn" onclick="addUrlField()">+ Add URL</button>
                 <div class="url-count" id="urlCount">0 URLs</div>
                 <button type="submit" class="btn btn-primary">Start Scraping</button>
             </form>
@@ -458,8 +481,31 @@ HTML = """<!DOCTYPE html>
     </div>
     <script>
         function updateCount() {
-            const urls = document.getElementById('urls').value.trim().split('\n').filter(url => url.trim().length > 0);
-            document.getElementById('urlCount').textContent = urls.length + ' URL' + (urls.length !== 1 ? 's' : '');
+            const inputs = document.querySelectorAll('input[name="url[]"]');
+            let count = 0;
+            inputs.forEach(input => {
+                if (input.value.trim().length > 0) count++;
+            });
+            document.getElementById('urlCount').textContent = count + ' URL' + (count !== 1 ? 's' : '');
+        }
+        
+        function addUrlField() {
+            const container = document.getElementById('urlFields');
+            const currentFields = container.querySelectorAll('.url-field').length;
+            if (currentFields >= 20) {
+                alert('Maximum 20 URLs allowed');
+                return;
+            }
+            const newField = document.createElement('div');
+            newField.className = 'url-field';
+            newField.innerHTML = '<input type="url" name="url[]" class="form-input url-input" placeholder="https://example.com/product" oninput="updateCount()"><button type="button" class="btn-remove" onclick="removeUrlField(this)" title="Remove">×</button>';
+            container.appendChild(newField);
+        }
+        
+        function removeUrlField(btn) {
+            const field = btn.parentElement;
+            field.remove();
+            updateCount();
         }
     </script>
 </body>
@@ -781,10 +827,11 @@ class ScrapeHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length).decode('utf-8')
             
-            # Parse URLs
+            # Parse URLs from multiple input fields
             parsed_data = urllib.parse.parse_qs(post_data)
-            urls_text = parsed_data.get('urls', [''])[0]
-            urls = [u.strip() for u in urls_text.split('\n') if u.strip()]
+            urls = []
+            if 'url[]' in parsed_data:
+                urls = [u.strip() for u in parsed_data['url[]'] if u.strip()]
             
             if not urls:
                 self.send_error(400, "No URLs provided")
