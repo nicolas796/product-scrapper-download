@@ -134,20 +134,29 @@ def scrape(url):
         
         # Extract price
         price = ""
-        # Try multiple price patterns - prioritize numeric JSON first (most accurate)
+        # Try multiple price patterns - prioritize meta tags and quoted strings (avoid cents)
         patterns = [
-            r'"price":\s*([0-9.]+)',  # JSON price as number (most reliable - matches first occurrence)
-            r'"price":\s*"([^"]+)"',  # JSON price as string
+            r'<meta[^>]*property=["\']og:price:amount["\'][^>]*content=["\']([0-9.]+)["\']',  # Open Graph price (Shopify)
+            r'<meta[^>]*content=["\']([0-9.]+)["\'][^>]*property=["\']og:price:amount["\']',  # Open Graph price alt
+            r'"price":\s*"([0-9.]+)"',  # JSON price as string (dollars)
             r'itemprop=["\']price["\']\s+content=["\']([^"\']+)["\']',  # Schema.org
+            r'"price":\s*([0-9.]+)',  # JSON price as number (may be cents - check below)
             r'\$\s*([0-9,]+\.?[0-9]*)'  # Dollar sign (least reliable - fallback)
         ]
         for pattern in patterns:
             matches = re.findall(pattern, html_content)
             if matches:
-                # For numeric JSON pattern, take first match (main product)
-                # For others, also take first match
                 price = matches[0]
                 break
+        
+        # Check if price might be in cents (integer between 100-100000 with no decimal)
+        if price and '.' not in price:
+            try:
+                val = int(price)
+                if 100 <= val <= 100000:  # Likely cents
+                    price = str(val / 100)
+            except:
+                pass
         
         # Extract compare at price (original/before sale price)
         compare_at_price = ""
