@@ -149,6 +149,30 @@ def scrape(url):
                 price = matches[0]
                 break
         
+        # Extract compare at price (original/before sale price)
+        compare_at_price = ""
+        compare_patterns = [
+            # BigCommerce RRP price
+            r'"rrp_without_tax":\s*\{[^}]*"value":\s*([0-9.]+)',
+            r'"compare_at_price":\s*([0-9.]+)',
+            r'"compareAtPrice":\s*([0-9.]+)',
+            # Shopify compare at price
+            r'"compare_at_price":\s*"([^"]*)"',
+            r'"compareAtPrice":\s*"([^"]*)"',
+            # Common sale patterns
+            r'class=["\'][^"\']*rrp[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
+            r'class=["\'][^"\']*was-price[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
+            r'class=["\'][^"\']*original[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
+            r'Was:\s*\$?([0-9.]+)',
+            # Schema.org
+            r'property=["\']product:original_price:amount["\']\s+content=["\']([^"\']+)',
+        ]
+        for pattern in compare_patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE)
+            if match:
+                compare_at_price = match.group(1)
+                break
+        
         # Extract image - prioritize product-specific images
         image = ""
         
@@ -295,7 +319,7 @@ def scrape(url):
             'product_description': desc_html,  # Keep as HTML, don't clean
             'image_url': image,
             'variant_price': clean_text(price),
-            'variant_compare_at_price': '',  # Can be extracted if needed
+            'variant_compare_at_price': clean_text(compare_at_price) if compare_at_price else '',
             'product_url': url,
             'ratings': '',
             'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M')
