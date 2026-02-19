@@ -158,6 +158,12 @@ def scrape(url):
             # Look for compare_at_price in main product JSON, before any selling_plan_allocations
             r'"compare_at_price":\s*"([0-9.]+)"',
             r'"compareAtPrice":\s*"([0-9.]+)"',
+            # Magento old-price patterns
+            r'id=["\']old-price-[^"\']*["\'][^>]*data-price-amount=["\']([0-9.]+)["\']',
+            r'class=["\'][^"\']*old-price[^"\']*["\'][^>]*data-price-amount=["\']([0-9.]+)["\']',
+            r'class=["\'][^"\']*regular-price[^"\']*["\'][^>]*data-price-amount=["\']([0-9.]+)["\']',
+            # Magento in JSON-LD
+            r'"price":\s*"([0-9.]+)"[^}]*"priceType":\s*"ListPrice"',
             # Schema.org original price
             r'property=["\']product:original_price:amount["\']\s+content=["\']([^"\']+)',
             # Common sale patterns (visible text on page)
