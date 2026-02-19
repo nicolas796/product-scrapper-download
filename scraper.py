@@ -154,24 +154,40 @@ def scrape(url):
         compare_patterns = [
             # BigCommerce RRP price
             r'"rrp_without_tax":\s*\{[^}]*"value":\s*([0-9.]+)',
-            r'"compare_at_price":\s*([0-9.]+)',
-            r'"compareAtPrice":\s*([0-9.]+)',
-            # Shopify compare at price
-            r'"compare_at_price":\s*"([^"]*)"',
-            r'"compareAtPrice":\s*"([^"]*)"',
-            # Common sale patterns
+            # Shopify compare at price - main product only (not selling plans)
+            # Look for compare_at_price in main product JSON, before any selling_plan_allocations
+            r'"compare_at_price":\s*"([0-9.]+)"',
+            r'"compareAtPrice":\s*"([0-9.]+)"',
+            # Schema.org original price
+            r'property=["\']product:original_price:amount["\']\s+content=["\']([^"\']+)',
+            # Common sale patterns (visible text on page)
             r'class=["\'][^"\']*rrp[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
             r'class=["\'][^"\']*was-price[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
             r'class=["\'][^"\']*original[^"\']*["\'][^>]*>\s*\$?([0-9.]+)',
             r'Was:\s*\$?([0-9.]+)',
-            # Schema.org
-            r'property=["\']product:original_price:amount["\']\s+content=["\']([^"\']+)',
         ]
         for pattern in compare_patterns:
             match = re.search(pattern, html_content, re.IGNORECASE)
             if match:
-                compare_at_price = match.group(1)
-                break
+                val = match.group(1)
+                # Only use if it's a valid price (not empty, not null, reasonable amount)
+                if val and val.lower() not in ['null', '0', '0.0', '']:
+                    # Check if it looks like a price (not too large, not subscription data)
+                    try:
+                        num = float(val)
+                        if 0.01 < num < 10000:  # Reasonable price range
+                            compare_at_price = val
+                            break
+                    except:
+                        pass
+        
+        # Additional check: if compare_at_price equals current price, it's not a real compare at
+        if compare_at_price and price:
+            try:
+                if float(compare_at_price) == float(price):
+                    compare_at_price = ""
+            except:
+                pass
         
         # Extract image - prioritize product-specific images
         image = ""
