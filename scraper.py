@@ -92,19 +92,26 @@ def scrape(url):
         desc_html = ""
         
         # Try to find product description in common HTML structures
-        # Look for description div/section with common class names
+        # Prioritize actual description containers over features/specs
         desc_patterns = [
-            r'<div[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</div>',
+            # Look for description content within specific sections (avoid features/specs)
+            r'<div[^>]*class=["\'][^"\']*product-attributes-content[^"\']*["\'][^>]*>\s*<h3[^>]*>Description</h3>(.*?)</div>\s*(?:<button|<h3|</div>)',
+            r'<div[^>]*class=["\'][^"\']*product__description[^"\']*["\'][^>]*>(.*?)</div>',
             r'<div[^>]*class=["\'][^"\']*product-description[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<div[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*class=["\'][^"\']*rte[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<div[^>]*class=["\'][^"\']*rte[^"\']*["\'][^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</div>',
             r'<div[^>]*id=["\']description["\'][^>]*>(.*?)</div>',
             r'<section[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</section>',
+            r'<div[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</div>',
         ]
         
         for pattern in desc_patterns:
             m = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
             if m:
                 desc_html = m.group(1).strip()
-                break
+                # Skip if it's just features/specs list (starts with <ul> or has size chart)
+                if desc_html and not desc_html.startswith('<ul') and 'size chart' not in desc_html.lower()[:200]:
+                    break
         
         # If no HTML description found, fallback to meta description but wrap in <p> tag
         if not desc_html:
