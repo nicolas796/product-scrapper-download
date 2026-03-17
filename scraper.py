@@ -260,10 +260,16 @@ def scrape(url):
         
         # Extract description as HTML (preserve formatting)
         desc_html = ""
-        
+
         # Try to find product description in common HTML structures
         # Prioritize actual description containers over features/specs
         desc_patterns = [
+            # Shopware / Beate Johnen style buybox information
+            r'<div[^>]*class=["\'][^"\']*buybox-information[^"\']*["\'][^>]*>(.*?)</div>\s*</div>',
+            r'<div[^>]*class=["\'][^"\']*buybox-information[^"\']*["\'][^>]*>(.*?)</div>',
+            # Shopware product detail description body
+            r'<div[^>]*class=["\'][^"\']*product-detail-description-text[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<div[^>]*class=["\'][^"\']*product-detail__description[^"\']*["\'][^>]*>(.*?)</div>',
             # Look for description content within specific sections (avoid features/specs)
             r'<div[^>]*class=["\'][^"\']*product-attributes-content[^"\']*["\'][^>]*>\s*<h3[^>]*>Description</h3>(.*?)</div>\s*(?:<button|<h3|</div>)',
             r'<div[^>]*class=["\'][^"\']*product__description[^"\']*["\'][^>]*>(.*?)</div>',
@@ -273,6 +279,10 @@ def scrape(url):
             r'<div[^>]*id=["\']description["\'][^>]*>(.*?)</div>',
             r'<section[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</section>',
             r'<div[^>]*class=["\'][^"\']*description[^"\']*["\'][^>]*>(.*?)</div>',
+            # WooCommerce
+            r'<div[^>]*class=["\'][^"\']*woocommerce-product-details__short-description[^"\']*["\'][^>]*>(.*?)</div>',
+            # Generic tab content for description
+            r'<div[^>]*id=["\']tab-description["\'][^>]*>(.*?)</div>',
         ]
         
         for pattern in desc_patterns:
@@ -306,8 +316,8 @@ def scrape(url):
             # Trim whitespace but keep HTML tags
             desc_html = desc_html.strip()
             # Limit length if needed
-            if len(desc_html) > 2000:
-                desc_html = desc_html[:2000] + "..."
+            if len(desc_html) > 5000:
+                desc_html = desc_html[:5000] + "..."
         
         # Extract price
         price = ""
@@ -516,6 +526,67 @@ def scrape(url):
                     print(f"  → Upgraded image: replaced dimension path")
                     image = full_size
         
+        # Extract star ratings
+        ratings = ""
+
+        # Method 1: JSON-LD aggregateRating (most reliable)
+        jsonld_blocks = re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_content, re.DOTALL | re.IGNORECASE)
+        for block in jsonld_blocks:
+            rating_match = re.search(r'"ratingValue"[:\s]*"?([0-9.]+)"?', block)
+            if rating_match:
+                ratings = rating_match.group(1)
+                break
+
+        # Method 2: Schema.org microdata (itemprop="ratingValue")
+        if not ratings:
+            m = re.search(r'itemprop=["\']ratingValue["\'][^>]*content=["\']([0-9.]+)["\']', html_content, re.IGNORECASE)
+            if not m:
+                m = re.search(r'content=["\']([0-9.]+)["\'][^>]*itemprop=["\']ratingValue["\']', html_content, re.IGNORECASE)
+            if m:
+                ratings = m.group(1)
+
+        # Method 3: Shopware / common star-rating patterns
+        if not ratings:
+            rating_patterns = [
+                # Shopware star rating
+                r'class=["\'][^"\']*product-review-point[^"\']*["\'][^>]*>\s*([0-9.]+)\s*/',
+                # data-rating-avg or similar attributes
+                r'data-rating-avg=["\']([0-9.]+)["\']',
+                r'data-average-rating=["\']([0-9.]+)["\']',
+                r'data-score=["\']([0-9.]+)["\']',
+                # CSS width-based star ratings (e.g. style="width: 100%" = 5 stars)
+                r'class=["\'][^"\']*rating-star[^"\']*["\'][^>]*style=["\'][^"\']*width:\s*([0-9.]+)%',
+                r'class=["\'][^"\']*star-rating[^"\']*["\'][^>]*style=["\'][^"\']*width:\s*([0-9.]+)%',
+                # Visible text patterns
+                r'class=["\'][^"\']*rating[^"\']*["\'][^>]*>\s*([0-9.]+)\s*/\s*5',
+                r'class=["\'][^"\']*rating[^"\']*["\'][^>]*>\s*([0-9.]+)\s*out\s*of\s*5',
+                # Generic rating value near stars
+                r'class=["\'][^"\']*stars?[^"\']*["\'][^>]*>\s*([0-9.]+)\s*<',
+            ]
+            for pattern in rating_patterns:
+                m = re.search(pattern, html_content, re.IGNORECASE)
+                if m:
+                    val = m.group(1)
+                    try:
+                        num_val = float(val)
+                        # If it's a percentage (width), convert to 5-star scale
+                        if num_val > 5:
+                            num_val = round(num_val / 20, 1)
+                        if 0 < num_val <= 5:
+                            ratings = str(num_val)
+                            break
+                    except ValueError:
+                        pass
+
+        # Method 4: Count filled star elements
+        if not ratings:
+            filled_stars = len(re.findall(r'class=["\'][^"\']*(?:star--filled|star-filled|icon-star-full|is-active)[^"\']*["\']', html_content, re.IGNORECASE))
+            if filled_stars > 0 and filled_stars <= 5:
+                ratings = str(filled_stars)
+
+        if ratings:
+            print(f"  Rating: {ratings}/5")
+
         # Generate SKU
         clean = re.sub(r'[^a-zA-Z]', '', title)[:5].upper().ljust(5, 'X')
         num = int(hashlib.md5(url.encode()).hexdigest(), 16) % 9000 + 1000
@@ -529,10 +600,10 @@ def scrape(url):
             'variant_price': clean_text(price),
             'variant_compare_at_price': clean_text(compare_at_price) if compare_at_price else '',
             'product_url': url,
-            'ratings': '',
+            'ratings': ratings,
             'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M')
         }
-        
+
         print(f"✓ Scraped: {product['product_name'][:50]}")
         return product
         
