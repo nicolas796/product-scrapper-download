@@ -4,9 +4,15 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python scraper.py
+    disk:
+      name: user-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PORT
         value: 10000
+      - key: DATA_DIR
+        value: /var/data
       - key: SENDGRID_API_KEY
         sync: false
       - key: FROM_EMAIL

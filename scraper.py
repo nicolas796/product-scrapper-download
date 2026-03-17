@@ -2,7 +2,7 @@
 import re
 import hashlib
 import csv
-import json
+import sqlite3
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -52,39 +52,75 @@ APP_URL = os.getenv('APP_URL', 'http://localhost:8080')
 # Super user email - this user can access the admin panel to manage authorized users
 SUPER_USER_EMAIL = os.getenv('SUPER_USER_EMAIL', '')
 
-# File to persist authorized user emails
-AUTHORIZED_USERS_FILE = os.getenv('AUTHORIZED_USERS_FILE', 'authorized_users.json')
+# Path for SQLite database on persistent disk
+# On Render, use the persistent disk mount path; locally falls back to current directory
+DATA_DIR = os.getenv('DATA_DIR', '/var/data')
+DB_PATH = os.path.join(DATA_DIR, 'users.db')
 
 # Magic link token expiry in minutes
 MAGIC_LINK_EXPIRY_MINUTES = int(os.getenv('MAGIC_LINK_EXPIRY_MINUTES', '15'))
 
 # ============================================================
-# Authorized Users Storage (JSON file-based persistence)
+# Authorized Users Storage (SQLite on persistent disk)
 # ============================================================
 
-def load_authorized_users():
-    """Load authorized user emails from JSON file"""
-    try:
-        with open(AUTHORIZED_USERS_FILE, 'r') as f:
-            data = json.load(f)
-            return set(email.lower() for email in data.get('emails', []))
-    except (FileNotFoundError, json.JSONDecodeError):
-        # Initialize with super user if set
-        emails = set()
-        if SUPER_USER_EMAIL:
-            emails.add(SUPER_USER_EMAIL.lower())
-        save_authorized_users(emails)
-        return emails
+def init_db():
+    """Initialize the SQLite database and create tables if needed"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS authorized_users (
+            email TEXT PRIMARY KEY,
+            added_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ''')
+    conn.commit()
+    # Ensure super user is always in the database
+    if SUPER_USER_EMAIL:
+        conn.execute(
+            'INSERT OR IGNORE INTO authorized_users (email) VALUES (?)',
+            (SUPER_USER_EMAIL.lower(),)
+        )
+        conn.commit()
+    conn.close()
+    print(f"Database initialized at {DB_PATH}")
 
-def save_authorized_users(emails):
-    """Save authorized user emails to JSON file"""
-    with open(AUTHORIZED_USERS_FILE, 'w') as f:
-        json.dump({'emails': sorted(list(emails))}, f, indent=2)
+def load_authorized_users():
+    """Load authorized user emails from SQLite"""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute('SELECT email FROM authorized_users ORDER BY email').fetchall()
+    conn.close()
+    return set(row[0] for row in rows)
+
+def add_authorized_user(email):
+    """Add an authorized user email. Returns True if added, False if already exists."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute('INSERT INTO authorized_users (email) VALUES (?)', (email.lower(),))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def remove_authorized_user(email):
+    """Remove an authorized user email. Returns True if removed."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute('DELETE FROM authorized_users WHERE email = ?', (email.lower(),))
+    conn.commit()
+    removed = cursor.rowcount > 0
+    conn.close()
+    return removed
 
 def is_authorized_email(email):
     """Check if an email is authorized to use the tool"""
-    emails = load_authorized_users()
-    return email.lower() in emails or (SUPER_USER_EMAIL and email.lower() == SUPER_USER_EMAIL.lower())
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute('SELECT 1 FROM authorized_users WHERE email = ?', (email.lower(),)).fetchone()
+    conn.close()
+    if row:
+        return True
+    return SUPER_USER_EMAIL and email.lower() == SUPER_USER_EMAIL.lower()
 
 def is_super_user(email):
     """Check if an email is the super user"""
@@ -1242,17 +1278,13 @@ class ScrapeHandler(BaseHTTPRequestHandler):
                 if not new_email or '@' not in new_email:
                     page_html = self.render_admin_page(
                         '<div class="message message-error">Please enter a valid email address.</div>')
+                elif not add_authorized_user(new_email):
+                    page_html = self.render_admin_page(
+                        f'<div class="message message-error">{html.escape(new_email)} is already authorized.</div>')
                 else:
-                    emails = load_authorized_users()
-                    if new_email in emails:
-                        page_html = self.render_admin_page(
-                            f'<div class="message message-error">{html.escape(new_email)} is already authorized.</div>')
-                    else:
-                        emails.add(new_email)
-                        save_authorized_users(emails)
-                        print(f"Admin added authorized user: {new_email}")
-                        page_html = self.render_admin_page(
-                            f'<div class="message message-success">{html.escape(new_email)} has been added.</div>')
+                    print(f"Admin added authorized user: {new_email}")
+                    page_html = self.render_admin_page(
+                        f'<div class="message message-success">{html.escape(new_email)} has been added.</div>')
 
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html; charset=utf-8')
@@ -1278,10 +1310,7 @@ class ScrapeHandler(BaseHTTPRequestHandler):
                 parsed_data = urllib.parse.parse_qs(post_data)
                 remove_email = parsed_data.get('email', [''])[0].strip().lower()
 
-                emails = load_authorized_users()
-                if remove_email in emails and not is_super_user(remove_email):
-                    emails.discard(remove_email)
-                    save_authorized_users(emails)
+                if not is_super_user(remove_email) and remove_authorized_user(remove_email):
                     print(f"Admin removed authorized user: {remove_email}")
                     page_html = self.render_admin_page(
                         f'<div class="message message-success">{html.escape(remove_email)} has been removed.</div>')
@@ -1714,7 +1743,10 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 def main():
     """Start the scraper server"""
     port = int(os.getenv('PORT', 8080))  # Use PORT env var for cloud, default 8080 for local
-    
+
+    # Initialize SQLite database on persistent disk
+    init_db()
+
     print("=" * 60)
     print("       🛍️  eStreamly Product Scraper - Windows Ready!")
     print("=" * 60)
