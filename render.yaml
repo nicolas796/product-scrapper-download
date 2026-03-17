@@ -3,9 +3,15 @@ services:
     name: estreamly-scraper
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python scraper_improved.py
+    startCommand: python scraper.py
     envVars:
-      - key: AUTHORIZED_USERS
-        value: admin:changeme123,user1:password1
       - key: PORT
         value: 10000
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: FROM_EMAIL
+        value: noreply@estreamly.com
+      - key: APP_URL
+        value: https://estreamly-scraper.onrender.com
+      - key: SUPER_USER_EMAIL
+        sync: false
