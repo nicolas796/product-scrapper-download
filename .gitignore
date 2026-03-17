@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+authorized_users.json
+*.xlsx
