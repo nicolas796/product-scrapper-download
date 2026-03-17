@@ -171,20 +171,20 @@ def send_magic_link_email(email, token):
     message = Mail(
         from_email=FROM_EMAIL,
         to_emails=email,
-        subject='Sign in to eStreamly Product Scraper',
+        subject='Sign in to Product Wizard by eStreamly',
         html_content=f'''
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 40px 20px;">
             <div style="text-align: center; margin-bottom: 30px;">
-                <div style="width: 60px; height: 60px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: inline-block; margin-bottom: 16px;"></div>
-                <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">eStreamly</h1>
-                <p style="color: #888; font-size: 14px; margin: 4px 0 0;">Product Scraper</p>
+                <img src="https://www.estreamly.com/assets/images/streamify.svg" alt="eStreamly" style="height: 48px; margin-bottom: 12px;">
+                <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">Product Wizard</h1>
+                <p style="color: #888; font-size: 14px; margin: 4px 0 0;">by eStreamly</p>
             </div>
             <div style="background: #f8f9fa; border-radius: 12px; padding: 32px; text-align: center;">
                 <h2 style="color: #333; font-size: 20px; margin: 0 0 12px;">Sign in to your account</h2>
                 <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">
                     Click the button below to sign in. This link will expire in {MAGIC_LINK_EXPIRY_MINUTES} minutes.
                 </p>
-                <a href="{magic_link}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+                <a href="{magic_link}" style="display: inline-block; background: #667eea; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
                     Sign In
                 </a>
                 <p style="color: #999; font-size: 12px; margin: 24px 0 0; line-height: 1.5;">
@@ -568,7 +568,7 @@ HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>eStreamly Product Scraper</title>
+    <title>eStreamly Product Wizard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; min-height: 100vh; }
@@ -618,11 +618,11 @@ HTML = """<!DOCTYPE html>
             <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly" style="width: 24px; height: 24px; object-fit: contain; border-radius: 4px;">
         </div>
         <div class="header-title">eStreamly</div>
-        <div class="header-subtitle">Product Scraper</div>
+        <div class="header-subtitle">Product Wizard</div>
         <a href="/logout" class="logout-btn">Sign Out</a>
     </div>
     <div class="container">
-        <h1 class="page-title">Product Scraper</h1>
+        <h1 class="page-title">Product Wizard</h1>
         <p class="page-description">Extract product information from e-commerce URLs</p>
         <div class="alert">
             <div class="alert-icon">⚠️</div>
@@ -709,67 +709,113 @@ LOGIN_HTML = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign In - eStreamly Product Scraper</title>
+    <title>Sign In - Product Wizard by eStreamly</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #eef1f8;
             min-height: 100vh;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
+            flex-direction: column;
         }
-        .login-container {
+        /* Top navigation bar */
+        .navbar {
             background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            width: 100%;
-            max-width: 420px;
-            padding: 48px 40px;
-            text-align: center;
+            padding: 14px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 3px solid #667eea;
         }
-        .logo {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 16px;
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+        }
+        .navbar-brand img {
+            height: 42px;
+            width: auto;
+        }
+        .navbar-brand span {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1a1a2e;
+        }
+        .navbar-login {
+            font-size: 14px;
+            color: #555;
+            font-weight: 500;
+        }
+        /* Main content area */
+        .main-content {
+            flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+            padding: 40px 24px;
+            gap: 60px;
+            max-width: 1100px;
+            margin: 0 auto;
+            width: 100%;
         }
-        .logo img {
-            width: 48px;
-            height: 48px;
-            object-fit: contain;
-            filter: brightness(0) invert(1);
+        /* Left side - branding & description */
+        .hero-section {
+            flex: 1;
+            max-width: 460px;
+            text-align: center;
         }
-        .brand-name {
-            font-size: 28px;
+        .hero-title {
+            font-size: 32px;
             font-weight: 700;
             color: #1a1a2e;
-            margin-bottom: 8px;
-            letter-spacing: -0.5px;
+            margin-bottom: 20px;
         }
-        .product-name {
-            font-size: 14px;
-            color: #666;
-            margin-bottom: 32px;
-            font-weight: 500;
+        .hero-description {
+            font-size: 16px;
+            color: #555;
+            line-height: 1.7;
         }
-        .welcome-text {
-            font-size: 20px;
-            font-weight: 600;
+        /* Right side - login card */
+        .login-card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 420px;
+            padding: 40px 36px;
+        }
+        .card-header {
+            text-align: center;
+            margin-bottom: 28px;
+        }
+        .card-header h2 {
+            font-size: 22px;
+            font-weight: 700;
             color: #1a1a2e;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
-        .subtitle {
+        .card-header p {
             font-size: 14px;
             color: #888;
-            margin-bottom: 32px;
+        }
+        /* Tab-style indicator (only magic link, for visual parity) */
+        .auth-tabs {
+            display: flex;
+            border-bottom: 2px solid #e8e8e8;
+            margin-bottom: 28px;
+        }
+        .auth-tab {
+            flex: 1;
+            text-align: center;
+            padding: 10px 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
+            margin-bottom: -2px;
+            cursor: default;
         }
         .form-group {
             text-align: left;
@@ -777,8 +823,8 @@ LOGIN_HTML = '''<!DOCTYPE html>
         }
         .form-label {
             display: block;
-            font-size: 13px;
-            font-weight: 600;
+            font-size: 12px;
+            font-weight: 700;
             color: #444;
             margin-bottom: 8px;
             text-transform: uppercase;
@@ -786,9 +832,9 @@ LOGIN_HTML = '''<!DOCTYPE html>
         }
         .form-input {
             width: 100%;
-            padding: 14px 16px;
-            border: 2px solid #e8e8e8;
-            border-radius: 10px;
+            padding: 13px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
             font-size: 15px;
             transition: all 0.2s;
             background: #fafafa;
@@ -797,32 +843,45 @@ LOGIN_HTML = '''<!DOCTYPE html>
             outline: none;
             border-color: #667eea;
             background: white;
-            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
         }
-        .form-input::placeholder {
-            color: #aaa;
-        }
+        .form-input::placeholder { color: #aaa; }
         .signin-btn {
             width: 100%;
-            padding: 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 14px;
+            background: #667eea;
             color: white;
             border: none;
-            border-radius: 10px;
-            font-size: 16px;
+            border-radius: 8px;
+            font-size: 15px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            margin-top: 12px;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            margin-top: 4px;
         }
         .signin-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+            background: #5a6fd6;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.35);
         }
-        .signin-btn:active {
-            transform: translateY(0);
+        .signin-btn:active { transform: translateY(0); }
+        .helper-text {
+            text-align: center;
+            font-size: 13px;
+            color: #888;
+            margin-top: 14px;
         }
+        .card-divider {
+            border: none;
+            border-top: 1px solid #e8e8e8;
+            margin: 24px 0;
+        }
+        .card-footer {
+            text-align: center;
+            font-size: 13px;
+            color: #888;
+        }
+        /* Messages */
         .message {
             padding: 12px 16px;
             border-radius: 8px;
@@ -831,67 +890,67 @@ LOGIN_HTML = '''<!DOCTYPE html>
             display: none;
         }
         .message.error {
-            background: #fee;
+            background: #fef2f2;
             color: #c33;
             border-left: 4px solid #c33;
         }
         .message.success {
-            background: #efd;
-            color: #270;
-            border-left: 4px solid #270;
+            background: #f0fdf4;
+            color: #15803d;
+            border-left: 4px solid #15803d;
         }
-        .message.show {
-            display: block;
-        }
-        .footer-text {
-            margin-top: 32px;
-            font-size: 12px;
-            color: #999;
-        }
-        .magic-link-info {
-            background: #f0f4ff;
-            border-radius: 8px;
-            padding: 14px;
-            margin-bottom: 24px;
-            font-size: 13px;
-            color: #555;
-            line-height: 1.5;
-        }
-        .magic-link-info strong {
-            color: #667eea;
-        }
-        @media (max-width: 480px) {
-            .login-container {
-                padding: 36px 24px;
+        .message.show { display: block; }
+        /* Responsive */
+        @media (max-width: 768px) {
+            .main-content {
+                flex-direction: column;
+                gap: 32px;
+                padding: 24px 16px;
             }
-            .brand-name {
-                font-size: 24px;
-            }
+            .hero-section { max-width: 100%; }
+            .hero-title { font-size: 26px; }
+            .login-card { max-width: 100%; }
         }
     </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="logo">
-            <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly Logo" style="width: 48px; height: 48px; object-fit: contain;">
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">
+            <img src="https://www.estreamly.com/assets/images/streamify.svg" alt="eStreamly Logo" style="height: 42px;">
+            <span>eStreamly</span>
+        </a>
+        <span class="navbar-login">Login</span>
+    </nav>
+    <div class="main-content">
+        <div class="hero-section">
+            <h1 class="hero-title">Product Wizard</h1>
+            <p class="hero-description">
+                Extract and enrich product data from any e-commerce URL in seconds.
+                Paste a link, and Product Wizard scrapes titles, descriptions, images, and
+                prices &mdash; then exports clean, ready-to-use spreadsheets for your catalog.
+            </p>
         </div>
-        <div class="brand-name">eStreamly</div>
-        <div class="product-name">Product Scraper</div>
-        <div class="welcome-text">Welcome back</div>
-        <div class="subtitle">Sign in with your email address</div>
-        <div class="message error" id="errorMsg">This email is not authorized. Please contact your administrator.</div>
-        <div class="message success" id="successMsg">Magic link sent! Check your email inbox and click the link to sign in.</div>
-        <div class="magic-link-info">
-            Enter your email address and we'll send you a <strong>magic link</strong> to sign in. No password needed!
-        </div>
-        <form method="POST" action="/login">
-            <div class="form-group">
-                <label class="form-label" for="email">Email Address</label>
-                <input type="email" id="email" name="email" class="form-input" placeholder="you@company.com" required autofocus>
+        <div class="login-card">
+            <div class="card-header">
+                <h2>Welcome Back</h2>
+                <p>Sign in to manage your content</p>
             </div>
-            <button type="submit" class="signin-btn">Send Magic Link</button>
-        </form>
-        <div class="footer-text">Secure passwordless authentication via email</div>
+            <div class="auth-tabs">
+                <div class="auth-tab">Magic Link</div>
+            </div>
+            <div class="message error" id="errorMsg"></div>
+            <div class="message success" id="successMsg"></div>
+            <form method="POST" action="/login">
+                <div class="form-group">
+                    <label class="form-label" for="email">Email Address</label>
+                    <input type="email" id="email" name="email" class="form-input" placeholder="you@company.com" required autofocus>
+                </div>
+                <button type="submit" class="signin-btn">Send Login Code</button>
+            </form>
+            <p class="helper-text">We'll send a secure sign-in link to your email</p>
+            <hr class="card-divider">
+            <p class="card-footer">Need an account? Contact your administrator.</p>
+        </div>
     </div>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
@@ -910,6 +969,7 @@ LOGIN_HTML = '''<!DOCTYPE html>
             el.classList.add('show');
         }
         if (urlParams.has('sent')) {
+            document.getElementById('successMsg').textContent = 'Magic link sent! Check your email inbox and click the link to sign in.';
             document.getElementById('successMsg').classList.add('show');
         }
     </script>
@@ -922,7 +982,7 @@ VERIFY_ERROR_HTML = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Link Expired - eStreamly Product Scraper</title>
+    <title>Link Expired - eStreamly Product Wizard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -974,7 +1034,7 @@ ADMIN_HTML = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin - eStreamly Product Scraper</title>
+    <title>Admin - eStreamly Product Wizard</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; min-height: 100vh; }}
@@ -1466,7 +1526,7 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scraping Results - eStreamly 🛍️ Product Scraper Pro</title>
+    <title>Scraping Results - Product Wizard by eStreamly</title>
     <style>
         * {{
             margin: 0;
@@ -1748,7 +1808,7 @@ def main():
     init_db()
 
     print("=" * 60)
-    print("       🛍️  eStreamly Product Scraper - Windows Ready!")
+    print("       🛍️  eStreamly Product Wizard - Windows Ready!")
     print("=" * 60)
     print("\n📍 Server URLs:")
     print(f"   Local:   http://localhost:{port}")
