@@ -2,7 +2,10 @@
 import re
 import hashlib
 import csv
-from datetime import datetime
+import sqlite3
+import secrets
+import uuid
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import socket
@@ -10,7 +13,7 @@ import html
 import base64
 import os
 
-# Install these if you don't have them: pip install requests openpyxl
+# Install these if you don't have them: pip install requests openpyxl sendgrid
 try:
     import requests
 except ImportError:
@@ -25,20 +28,187 @@ except ImportError:
     print("Please install it by running: pip install openpyxl")
     exit(1)
 
-# AUTHORIZED USERS - Add username:password pairs here
-AUTHORIZED_USERS = {
-    'admin': 'password123',  # Change these!
-    'user1': 'user1pass',
-    'user2': 'user2pass',
-}
+try:
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
+except ImportError:
+    print("ERROR: 'sendgrid' library not found!")
+    print("Please install it by running: pip install sendgrid")
+    exit(1)
 
-# Or load from environment variable (for cloud deployment)
-# Format: USERNAME1:PASSWORD1,USERNAME2:PASSWORD2
-if os.getenv('AUTHORIZED_USERS'):
-    AUTHORIZED_USERS = {}
-    for user_pass in os.getenv('AUTHORIZED_USERS').split(','):
-        username, password = user_pass.split(':')
-        AUTHORIZED_USERS[username] = password
+# ============================================================
+# Configuration via environment variables
+# ============================================================
+
+# SendGrid API key (required for sending magic link emails)
+SENDGRID_API_KEY = os.getenv('SENDGRID_API_KEY', '')
+
+# The email address magic links are sent from (must be verified in SendGrid)
+FROM_EMAIL = os.getenv('FROM_EMAIL', 'noreply@estreamly.com')
+
+# Base URL of the application (used to construct magic links)
+APP_URL = os.getenv('APP_URL', 'http://localhost:8080')
+
+# Super user email - this user can access the admin panel to manage authorized users
+SUPER_USER_EMAIL = os.getenv('SUPER_USER_EMAIL', '')
+
+# Path for SQLite database on persistent disk
+# On Render, use the persistent disk mount path; locally falls back to current directory
+DATA_DIR = os.getenv('DATA_DIR', '/var/data')
+DB_PATH = os.path.join(DATA_DIR, 'users.db')
+
+# Magic link token expiry in minutes
+MAGIC_LINK_EXPIRY_MINUTES = int(os.getenv('MAGIC_LINK_EXPIRY_MINUTES', '15'))
+
+# ============================================================
+# Authorized Users Storage (SQLite on persistent disk)
+# ============================================================
+
+def init_db():
+    """Initialize the SQLite database and create tables if needed"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS authorized_users (
+            email TEXT PRIMARY KEY,
+            added_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ''')
+    conn.commit()
+    # Ensure super user is always in the database
+    if SUPER_USER_EMAIL:
+        conn.execute(
+            'INSERT OR IGNORE INTO authorized_users (email) VALUES (?)',
+            (SUPER_USER_EMAIL.lower(),)
+        )
+        conn.commit()
+    conn.close()
+    print(f"Database initialized at {DB_PATH}")
+
+def load_authorized_users():
+    """Load authorized user emails from SQLite"""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute('SELECT email FROM authorized_users ORDER BY email').fetchall()
+    conn.close()
+    return set(row[0] for row in rows)
+
+def add_authorized_user(email):
+    """Add an authorized user email. Returns True if added, False if already exists."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute('INSERT INTO authorized_users (email) VALUES (?)', (email.lower(),))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def remove_authorized_user(email):
+    """Remove an authorized user email. Returns True if removed."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute('DELETE FROM authorized_users WHERE email = ?', (email.lower(),))
+    conn.commit()
+    removed = cursor.rowcount > 0
+    conn.close()
+    return removed
+
+def is_authorized_email(email):
+    """Check if an email is authorized to use the tool"""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute('SELECT 1 FROM authorized_users WHERE email = ?', (email.lower(),)).fetchone()
+    conn.close()
+    if row:
+        return True
+    return SUPER_USER_EMAIL and email.lower() == SUPER_USER_EMAIL.lower()
+
+def is_super_user(email):
+    """Check if an email is the super user"""
+    return SUPER_USER_EMAIL and email.lower() == SUPER_USER_EMAIL.lower()
+
+# ============================================================
+# Magic Link Token Management (in-memory with expiry)
+# ============================================================
+
+# Stores: {token: {'email': str, 'expires': datetime}}
+magic_link_tokens = {}
+
+# Stores: {session_id: {'email': str, 'created': datetime}}
+active_sessions = {}
+
+def generate_magic_link_token(email):
+    """Generate a secure magic link token for an email"""
+    # Clean up expired tokens
+    now = datetime.now()
+    expired = [t for t, d in magic_link_tokens.items() if d['expires'] < now]
+    for t in expired:
+        del magic_link_tokens[t]
+
+    token = secrets.token_urlsafe(48)
+    magic_link_tokens[token] = {
+        'email': email.lower(),
+        'expires': now + timedelta(minutes=MAGIC_LINK_EXPIRY_MINUTES)
+    }
+    return token
+
+def verify_magic_link_token(token):
+    """Verify a magic link token and return the email if valid"""
+    token_data = magic_link_tokens.get(token)
+    if not token_data:
+        return None
+    if token_data['expires'] < datetime.now():
+        del magic_link_tokens[token]
+        return None
+    # Token is single-use - delete after verification
+    email = token_data['email']
+    del magic_link_tokens[token]
+    return email
+
+def send_magic_link_email(email, token):
+    """Send a magic link email via SendGrid"""
+    magic_link = f"{APP_URL.rstrip('/')}/verify?token={token}"
+
+    message = Mail(
+        from_email=FROM_EMAIL,
+        to_emails=email,
+        subject='Sign in to eStreamly Product Scraper',
+        html_content=f'''
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 40px 20px;">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <div style="width: 60px; height: 60px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: inline-block; margin-bottom: 16px;"></div>
+                <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">eStreamly</h1>
+                <p style="color: #888; font-size: 14px; margin: 4px 0 0;">Product Scraper</p>
+            </div>
+            <div style="background: #f8f9fa; border-radius: 12px; padding: 32px; text-align: center;">
+                <h2 style="color: #333; font-size: 20px; margin: 0 0 12px;">Sign in to your account</h2>
+                <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">
+                    Click the button below to sign in. This link will expire in {MAGIC_LINK_EXPIRY_MINUTES} minutes.
+                </p>
+                <a href="{magic_link}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+                    Sign In
+                </a>
+                <p style="color: #999; font-size: 12px; margin: 24px 0 0; line-height: 1.5;">
+                    If you didn't request this email, you can safely ignore it.<br>
+                    If the button doesn't work, copy and paste this link:<br>
+                    <span style="color: #667eea; word-break: break-all;">{magic_link}</span>
+                </p>
+            </div>
+        </div>
+        '''
+    )
+
+    if not SENDGRID_API_KEY:
+        print(f"[DEBUG] SendGrid API key not set. Magic link: {magic_link}")
+        return True
+
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        print(f"Magic link email sent to {email} (status: {response.status_code})")
+        return response.status_code in (200, 201, 202)
+    except Exception as e:
+        print(f"Error sending magic link email to {email}: {e}")
+        return False
 
 # CSV will be downloadable from the web interface
 
@@ -533,7 +703,7 @@ HTML = """<!DOCTYPE html>
 </body>
 </html>"""
 
-# Professional Login Page HTML
+# Professional Login Page HTML - Magic Link
 LOGIN_HTML = '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -653,23 +823,42 @@ LOGIN_HTML = '''<!DOCTYPE html>
         .signin-btn:active {
             transform: translateY(0);
         }
-        .error-message {
-            background: #fee;
-            color: #c33;
+        .message {
             padding: 12px 16px;
             border-radius: 8px;
             font-size: 14px;
             margin-bottom: 20px;
-            border-left: 4px solid #c33;
             display: none;
         }
-        .error-message.show {
+        .message.error {
+            background: #fee;
+            color: #c33;
+            border-left: 4px solid #c33;
+        }
+        .message.success {
+            background: #efd;
+            color: #270;
+            border-left: 4px solid #270;
+        }
+        .message.show {
             display: block;
         }
         .footer-text {
             margin-top: 32px;
             font-size: 12px;
             color: #999;
+        }
+        .magic-link-info {
+            background: #f0f4ff;
+            border-radius: 8px;
+            padding: 14px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            color: #555;
+            line-height: 1.5;
+        }
+        .magic-link-info strong {
+            color: #667eea;
         }
         @media (max-width: 480px) {
             .login-container {
@@ -689,66 +878,207 @@ LOGIN_HTML = '''<!DOCTYPE html>
         <div class="brand-name">eStreamly</div>
         <div class="product-name">Product Scraper</div>
         <div class="welcome-text">Welcome back</div>
-        <div class="subtitle">Sign in to access your scraper</div>
-        <div class="error-message" id="errorMsg">Invalid username or password</div>
-        <form method="POST" action="/login" onsubmit="return handleSubmit(event)">
+        <div class="subtitle">Sign in with your email address</div>
+        <div class="message error" id="errorMsg">This email is not authorized. Please contact your administrator.</div>
+        <div class="message success" id="successMsg">Magic link sent! Check your email inbox and click the link to sign in.</div>
+        <div class="magic-link-info">
+            Enter your email address and we'll send you a <strong>magic link</strong> to sign in. No password needed!
+        </div>
+        <form method="POST" action="/login">
             <div class="form-group">
-                <label class="form-label" for="username">Username</label>
-                <input type="text" id="username" name="username" class="form-input" placeholder="Enter your username" required autofocus>
+                <label class="form-label" for="email">Email Address</label>
+                <input type="email" id="email" name="email" class="form-input" placeholder="you@company.com" required autofocus>
             </div>
-            <div class="form-group">
-                <label class="form-label" for="password">Password</label>
-                <input type="password" id="password" name="password" class="form-input" placeholder="Enter your password" required>
-            </div>
-            <button type="submit" class="signin-btn">Sign In</button>
+            <button type="submit" class="signin-btn">Send Magic Link</button>
         </form>
-        <div class="footer-text">Secure authentication</div>
+        <div class="footer-text">Secure passwordless authentication via email</div>
     </div>
     <script>
-        function handleSubmit(e) {
-            return true;
-        }
-        // Show error if redirected with error param
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.has('error')) {
-            document.getElementById('errorMsg').classList.add('show');
+            var msg = urlParams.get('error');
+            var el = document.getElementById('errorMsg');
+            if (msg === 'unauthorized') {
+                el.textContent = 'This email is not authorized. Please contact your administrator.';
+            } else if (msg === 'expired') {
+                el.textContent = 'This magic link has expired. Please request a new one.';
+            } else if (msg === 'invalid') {
+                el.textContent = 'Invalid magic link. Please request a new one.';
+            } else if (msg === 'send_failed') {
+                el.textContent = 'Failed to send email. Please try again later.';
+            }
+            el.classList.add('show');
+        }
+        if (urlParams.has('sent')) {
+            document.getElementById('successMsg').classList.add('show');
         }
     </script>
+</body>
+</html>'''
+
+# Magic Link Verification Success/Error Page
+VERIFY_ERROR_HTML = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Expired - eStreamly Product Scraper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 420px;
+            padding: 48px 40px;
+            text-align: center;
+        }
+        .icon { font-size: 48px; margin-bottom: 16px; }
+        h1 { font-size: 22px; color: #c33; margin-bottom: 12px; }
+        p { font-size: 14px; color: #666; margin-bottom: 24px; line-height: 1.6; }
+        a {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 14px 32px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">&#9888;</div>
+        <h1>Link Expired or Invalid</h1>
+        <p>This magic link has expired or has already been used. Magic links are valid for a single use only.</p>
+        <a href="/login">Request a New Link</a>
+    </div>
+</body>
+</html>'''
+
+# Admin Panel HTML Template (rendered with Python format)
+ADMIN_HTML = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - eStreamly Product Scraper</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; min-height: 100vh; }}
+        .header {{ background: white; border-bottom: 1px solid #e5e7eb; padding: 16px 32px; display: flex; align-items: center; gap: 12px; }}
+        .header-logo {{ width: 36px; height: 36px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; display: flex; align-items: center; justify-content: center; }}
+        .header-title {{ font-size: 18px; font-weight: 700; color: #1a1a2e; }}
+        .header-subtitle {{ font-size: 13px; color: #6b7280; margin-left: auto; }}
+        .nav-links {{ display: flex; gap: 12px; }}
+        .nav-link {{ font-size: 13px; color: #667eea; text-decoration: none; padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 6px; transition: all 0.2s; }}
+        .nav-link:hover {{ background: #f5f7fa; border-color: #667eea; }}
+        .container {{ max-width: 800px; margin: 0 auto; padding: 32px; }}
+        .page-title {{ font-size: 24px; font-weight: 600; color: #111827; margin-bottom: 8px; }}
+        .page-description {{ font-size: 14px; color: #6b7280; margin-bottom: 24px; }}
+        .card {{ background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px; margin-bottom: 24px; }}
+        .card-title {{ font-size: 16px; font-weight: 600; color: #111827; margin-bottom: 16px; }}
+        .add-form {{ display: flex; gap: 8px; }}
+        .add-form input {{ flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background: #f9fafb; }}
+        .add-form input:focus {{ outline: none; border-color: #6366f1; background: white; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }}
+        .btn {{ padding: 12px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }}
+        .btn-primary {{ background: #6366f1; color: white; }}
+        .btn-primary:hover {{ background: #4f46e5; }}
+        .btn-danger {{ background: #fee; color: #c33; border: 1px solid #fcc; padding: 6px 12px; font-size: 13px; }}
+        .btn-danger:hover {{ background: #fdd; }}
+        .user-list {{ list-style: none; }}
+        .user-item {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; }}
+        .user-email {{ font-size: 14px; color: #374151; }}
+        .user-badge {{ font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; }}
+        .badge-super {{ background: #fef3c7; color: #92400e; }}
+        .badge-user {{ background: #e0e7ff; color: #3730a3; }}
+        .message {{ padding: 12px 16px; border-radius: 6px; font-size: 14px; margin-bottom: 16px; }}
+        .message-success {{ background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }}
+        .message-error {{ background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }}
+        .empty-state {{ text-align: center; padding: 32px; color: #9ca3af; font-size: 14px; }}
+        @media (max-width: 768px) {{ .container {{ padding: 16px; }} .header {{ padding: 12px 16px; }} .add-form {{ flex-direction: column; }} }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-logo">
+            <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly" style="width: 24px; height: 24px; object-fit: contain; border-radius: 4px;">
+        </div>
+        <div class="header-title">eStreamly</div>
+        <div class="header-subtitle">Admin Panel</div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Scraper</a>
+            <a href="/logout" class="nav-link">Sign Out</a>
+        </div>
+    </div>
+    <div class="container">
+        <h1 class="page-title">User Management</h1>
+        <p class="page-description">Add or remove authorized users who can access the product scraper.</p>
+        {message}
+        <div class="card">
+            <div class="card-title">Add Authorized User</div>
+            <form method="POST" action="/admin/add" class="add-form">
+                <input type="email" name="email" placeholder="user@company.com" required>
+                <button type="submit" class="btn btn-primary">Add User</button>
+            </form>
+        </div>
+        <div class="card">
+            <div class="card-title">Authorized Users ({user_count})</div>
+            {user_list}
+        </div>
+    </div>
 </body>
 </html>'''
 
 class ScrapeHandler(BaseHTTPRequestHandler):
     # Store the last generated filename for download
     last_csv_file = None
-    # Simple session storage
-    active_sessions = set()
-    
-    def check_auth(self):
-        """Check if request has valid session cookie"""
+
+    def get_session_email(self):
+        """Get the email associated with the current session, or None"""
         cookie_header = self.headers.get('Cookie')
         if cookie_header:
-            # Look for session cookie
             cookies = cookie_header.split(';')
             for cookie in cookies:
                 cookie = cookie.strip()
                 if cookie.startswith('session='):
                     session_id = cookie.split('=', 1)[1]
-                    return session_id in self.active_sessions
-        return False
-    
+                    session = active_sessions.get(session_id)
+                    if session:
+                        return session['email']
+        return None
+
+    def check_auth(self):
+        """Check if request has valid session cookie"""
+        return self.get_session_email() is not None
+
     def require_auth(self):
         """Redirect to login page"""
         self.send_response(302)
         self.send_header('Location', '/login')
         self.end_headers()
-    
-    def set_session_cookie(self):
-        """Create and set a session cookie"""
-        import uuid
+
+    def create_session(self, email):
+        """Create a new session for the given email"""
         session_id = str(uuid.uuid4())
-        self.active_sessions.add(session_id)
+        active_sessions[session_id] = {
+            'email': email.lower(),
+            'created': datetime.now()
+        }
         return session_id
-    
+
     def clear_session(self):
         """Clear the session cookie"""
         cookie_header = self.headers.get('Cookie')
@@ -758,45 +1088,123 @@ class ScrapeHandler(BaseHTTPRequestHandler):
                 cookie = cookie.strip()
                 if cookie.startswith('session='):
                     session_id = cookie.split('=', 1)[1]
-                    self.active_sessions.discard(session_id)
-    
+                    active_sessions.pop(session_id, None)
+
+    def render_admin_page(self, message_html=''):
+        """Render the admin panel page"""
+        emails = load_authorized_users()
+        user_items = ''
+        for email in sorted(emails):
+            badge = '<span class="user-badge badge-super">Super User</span>' if is_super_user(email) else '<span class="user-badge badge-user">User</span>'
+            remove_btn = ''
+            if not is_super_user(email):
+                remove_btn = f'''
+                    <form method="POST" action="/admin/remove" style="margin:0;">
+                        <input type="hidden" name="email" value="{html.escape(email)}">
+                        <button type="submit" class="btn btn-danger" onclick="return confirm('Remove {html.escape(email)}?')">Remove</button>
+                    </form>'''
+            user_items += f'''
+                <div class="user-item">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span class="user-email">{html.escape(email)}</span>
+                        {badge}
+                    </div>
+                    {remove_btn}
+                </div>'''
+        if not emails:
+            user_items = '<div class="empty-state">No authorized users yet. Add one above.</div>'
+        return ADMIN_HTML.format(
+            message=message_html,
+            user_count=len(emails),
+            user_list=user_items
+        )
+
     def do_GET(self):
-        """Serve the main page, login page, or download CSV"""
+        """Serve the main page, login page, verify magic link, or download"""
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+        query = urllib.parse.parse_qs(parsed_path.query)
+
         # Public endpoints that don't require auth
-        if self.path == '/login':
+        if path == '/login' or self.path.startswith('/login'):
             self.send_response(200)
             self.send_header('Content-type', 'text/html; charset=utf-8')
             self.end_headers()
             self.wfile.write(LOGIN_HTML.encode('utf-8'))
             return
-        
-        if self.path == '/logout':
+
+        if path == '/verify':
+            # Verify magic link token
+            token = query.get('token', [''])[0]
+            if not token:
+                self.send_response(302)
+                self.send_header('Location', '/login?error=invalid')
+                self.end_headers()
+                return
+
+            email = verify_magic_link_token(token)
+            if not email:
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(VERIFY_ERROR_HTML.encode('utf-8'))
+                return
+
+            # Token valid - create session
+            session_id = self.create_session(email)
+            self.send_response(302)
+            self.send_header('Location', '/')
+            self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+            self.end_headers()
+            return
+
+        if path == '/logout':
             self.clear_session()
             self.send_response(302)
             self.send_header('Location', '/login')
             self.send_header('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
             self.end_headers()
             return
-        
+
         # Check authentication for protected endpoints
         if not self.check_auth():
             self.require_auth()
             return
-        
-        if self.path == '/':
-            # Serve main page
+
+        if path == '/':
+            # Serve main page - inject admin link if super user
+            page_html = HTML
+            session_email = self.get_session_email()
+            if session_email and is_super_user(session_email):
+                page_html = page_html.replace(
+                    '<a href="/logout" class="logout-btn">Sign Out</a>',
+                    '<a href="/admin" class="logout-btn" style="color:#764ba2;border-color:#764ba2;">Admin</a>'
+                    '<a href="/logout" class="logout-btn">Sign Out</a>'
+                )
             self.send_response(200)
             self.send_header('Content-type', 'text/html; charset=utf-8')
             self.end_headers()
-            self.wfile.write(HTML.encode('utf-8'))
-        elif self.path.startswith('/download/'):
+            self.wfile.write(page_html.encode('utf-8'))
+        elif path == '/admin':
+            # Admin panel - super user only
+            email = self.get_session_email()
+            if not is_super_user(email):
+                self.send_error(403, "Access denied. Super user only.")
+                return
+            page_html = self.render_admin_page()
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(page_html.encode('utf-8'))
+        elif path.startswith('/download/'):
             # Download file (XLSX or CSV)
-            filename = self.path.split('/download/')[1]
+            filename = path.split('/download/')[1]
+            # Sanitize filename to prevent directory traversal
+            filename = os.path.basename(filename)
             try:
                 with open(filename, 'rb') as f:
                     content = f.read()
                 self.send_response(200)
-                # Set correct MIME type based on file extension
                 if filename.endswith('.xlsx'):
                     self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 else:
@@ -808,37 +1216,117 @@ class ScrapeHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "File not found")
         else:
             self.send_error(404, "Page not found")
-    
+
     def do_POST(self):
-        """Handle login or scraping request"""
-        # Handle login form submission
-        if self.path == '/login':
+        """Handle login, admin actions, or scraping request"""
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+
+        # Handle magic link login form submission
+        if path == '/login':
             try:
                 content_length = int(self.headers['Content-Length'])
                 post_data = self.rfile.read(content_length).decode('utf-8')
                 parsed_data = urllib.parse.parse_qs(post_data)
-                
-                username = parsed_data.get('username', [''])[0]
-                password = parsed_data.get('password', [''])[0]
-                
-                # Validate credentials
-                if AUTHORIZED_USERS.get(username) == password:
-                    # Create session
-                    session_id = self.set_session_cookie()
+
+                email = parsed_data.get('email', [''])[0].strip().lower()
+
+                if not email:
                     self.send_response(302)
-                    self.send_header('Location', '/')
-                    self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                    self.send_header('Location', '/login?error=invalid')
+                    self.end_headers()
+                    return
+
+                # Check if email is authorized
+                if not is_authorized_email(email):
+                    self.send_response(302)
+                    self.send_header('Location', '/login?error=unauthorized')
+                    self.end_headers()
+                    return
+
+                # Generate magic link token and send email
+                token = generate_magic_link_token(email)
+                if send_magic_link_email(email, token):
+                    self.send_response(302)
+                    self.send_header('Location', '/login?sent=1')
                     self.end_headers()
                 else:
-                    # Invalid credentials - redirect back to login with error
                     self.send_response(302)
-                    self.send_header('Location', '/login?error=1')
+                    self.send_header('Location', '/login?error=send_failed')
                     self.end_headers()
                 return
             except Exception as e:
+                print(f"Login error: {e}")
                 self.send_error(400, f"Login error: {str(e)}")
                 return
-        
+
+        # Handle admin add user
+        if path == '/admin/add':
+            if not self.check_auth():
+                self.require_auth()
+                return
+            email = self.get_session_email()
+            if not is_super_user(email):
+                self.send_error(403, "Access denied")
+                return
+            try:
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                parsed_data = urllib.parse.parse_qs(post_data)
+                new_email = parsed_data.get('email', [''])[0].strip().lower()
+
+                if not new_email or '@' not in new_email:
+                    page_html = self.render_admin_page(
+                        '<div class="message message-error">Please enter a valid email address.</div>')
+                elif not add_authorized_user(new_email):
+                    page_html = self.render_admin_page(
+                        f'<div class="message message-error">{html.escape(new_email)} is already authorized.</div>')
+                else:
+                    print(f"Admin added authorized user: {new_email}")
+                    page_html = self.render_admin_page(
+                        f'<div class="message message-success">{html.escape(new_email)} has been added.</div>')
+
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(page_html.encode('utf-8'))
+                return
+            except Exception as e:
+                self.send_error(400, str(e))
+                return
+
+        # Handle admin remove user
+        if path == '/admin/remove':
+            if not self.check_auth():
+                self.require_auth()
+                return
+            email = self.get_session_email()
+            if not is_super_user(email):
+                self.send_error(403, "Access denied")
+                return
+            try:
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                parsed_data = urllib.parse.parse_qs(post_data)
+                remove_email = parsed_data.get('email', [''])[0].strip().lower()
+
+                if not is_super_user(remove_email) and remove_authorized_user(remove_email):
+                    print(f"Admin removed authorized user: {remove_email}")
+                    page_html = self.render_admin_page(
+                        f'<div class="message message-success">{html.escape(remove_email)} has been removed.</div>')
+                else:
+                    page_html = self.render_admin_page(
+                        '<div class="message message-error">Cannot remove this user.</div>')
+
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(page_html.encode('utf-8'))
+                return
+            except Exception as e:
+                self.send_error(400, str(e))
+                return
+
         # Check authentication for protected endpoints
         if not self.check_auth():
             self.require_auth()
@@ -1255,7 +1743,10 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 def main():
     """Start the scraper server"""
     port = int(os.getenv('PORT', 8080))  # Use PORT env var for cloud, default 8080 for local
-    
+
+    # Initialize SQLite database on persistent disk
+    init_db()
+
     print("=" * 60)
     print("       🛍️  eStreamly Product Scraper - Windows Ready!")
     print("=" * 60)
@@ -1268,14 +1759,20 @@ def main():
     except:
         pass
     
-    print("\n🔐 Authentication enabled - login required")
+    print("\n🔐 Magic Link Authentication enabled")
+    if SUPER_USER_EMAIL:
+        print(f"   Super User: {SUPER_USER_EMAIL}")
+    else:
+        print("   ⚠️  No SUPER_USER_EMAIL set! Set it to manage authorized users.")
+    if not SENDGRID_API_KEY:
+        print("   ⚠️  No SENDGRID_API_KEY set! Magic links will be printed to console.")
+    print(f"   App URL: {APP_URL}")
     print("\n💡 Instructions:")
     print("   1. Open the URL above in your browser")
-    print("   2. Sign in with your credentials on the login page")
-    print("   3. Paste product URLs (one per line)")
-    print("   4. Click 'Start Scraping'")
+    print("   2. Enter your email to receive a magic link")
+    print("   3. Click the link in your email to sign in")
+    print("   4. Paste product URLs and start scraping")
     print("   5. Download your XLSX file")
-    print("   5. Results will be saved as XLSX")
     
     print("\n⚠️  Press Ctrl+C to stop the server")
     print("=" * 60)

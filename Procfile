@@ -1,1 +1,1 @@
-web: python scraper_improved.py
+web: python scraper.py
