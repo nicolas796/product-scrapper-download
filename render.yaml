@@ -18,6 +18,6 @@ services:
       - key: FROM_EMAIL
         value: noreply@estreamly.com
       - key: APP_URL
-        value: https://estreamly-scraper.onrender.com
+        value: https://scraper.estreamly.co
       - key: SUPER_USER_EMAIL
         sync: false
