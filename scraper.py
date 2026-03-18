@@ -47,7 +47,7 @@ SENDGRID_API_KEY = os.getenv('SENDGRID_API_KEY', '')
 FROM_EMAIL = os.getenv('FROM_EMAIL', 'noreply@estreamly.com')
 
 # Base URL of the application (used to construct magic links)
-APP_URL = os.getenv('APP_URL', 'http://localhost:8080')
+APP_URL = os.getenv('APP_URL', 'https://scraper.estreamly.co')
 
 # Super user email - this user can access the admin panel to manage authorized users
 SUPER_USER_EMAIL = os.getenv('SUPER_USER_EMAIL', '')
@@ -685,10 +685,12 @@ HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <div class="header-logo">
-            <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly" style="width: 24px; height: 24px; object-fit: contain; border-radius: 4px;">
-        </div>
-        <div class="header-title">eStreamly</div>
+        <a href="https://www.estreamly.com/admin/analytics" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+            <div class="header-logo">
+                <img src="https://awsmp-logos.s3.amazonaws.com/seller-a7uwjxv5o3fdo/1b5259496265e3e2da2f7f7033b49d44.png" alt="eStreamly" style="width: 24px; height: 24px; object-fit: contain; border-radius: 4px;">
+            </div>
+            <div class="header-title">eStreamly</div>
+        </a>
         <div class="header-subtitle">Product Wizard</div>
         <a href="/logout" class="logout-btn">Sign Out</a>
     </div>
@@ -986,7 +988,7 @@ LOGIN_HTML = '''<!DOCTYPE html>
 </head>
 <body>
     <nav class="navbar">
-        <a href="/" class="navbar-brand">
+        <a href="https://www.estreamly.com/admin/analytics" class="navbar-brand">
             <img src="https://www.estreamly.com/assets/images/streamify.svg" alt="eStreamly Logo" style="height: 42px;">
             <span>eStreamly</span>
         </a>
