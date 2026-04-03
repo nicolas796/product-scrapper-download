@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import re
 import hashlib
+import hmac
+import json
+import time
 import csv
 import sqlite3
 import secrets
@@ -59,6 +62,11 @@ DB_PATH = os.path.join(DATA_DIR, 'users.db')
 
 # Magic link token expiry in minutes
 MAGIC_LINK_EXPIRY_MINUTES = int(os.getenv('MAGIC_LINK_EXPIRY_MINUTES', '15'))
+
+# eStreamly Hub SSO configuration
+USE_HUB_AUTH = os.getenv('USE_HUB_AUTH', '').strip().lower() == 'true'
+HUB_URL = os.getenv('HUB_URL', '').strip().rstrip('/')
+HUB_JWT_SECRET = os.getenv('HUB_JWT_SECRET', '').strip()
 
 # ============================================================
 # Authorized Users Storage (SQLite on persistent disk)
@@ -1175,6 +1183,74 @@ ADMIN_HTML = '''<!DOCTYPE html>
 </body>
 </html>'''
 
+# ============================================================
+# eStreamly Hub SSO helpers
+# ============================================================
+
+def _base64url_decode(s):
+    """Decode a base64url-encoded string (no padding required)."""
+    s = s.replace('-', '+').replace('_', '/')
+    # Add padding
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += '=' * padding
+    return base64.b64decode(s)
+
+
+def verify_hub_jwt(token):
+    """Verify an HS256 JWT token using HUB_JWT_SECRET.
+    Returns the decoded payload dict, or None on failure."""
+    if not HUB_JWT_SECRET or not token:
+        return None
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+
+        header_b64, payload_b64, signature_b64 = parts
+
+        # Verify signature
+        signing_input = f'{header_b64}.{payload_b64}'.encode('utf-8')
+        expected_sig = hmac.new(
+            HUB_JWT_SECRET.encode('utf-8'),
+            signing_input,
+            hashlib.sha256
+        ).digest()
+        actual_sig = _base64url_decode(signature_b64)
+
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            return None
+
+        # Decode header and verify algorithm
+        header = json.loads(_base64url_decode(header_b64))
+        if header.get('alg') != 'HS256':
+            return None
+
+        # Decode payload
+        payload = json.loads(_base64url_decode(payload_b64))
+
+        # Check expiry (exp is seconds since epoch)
+        exp = payload.get('exp')
+        if exp is not None and time.time() > exp:
+            return None
+
+        return payload
+    except Exception as e:
+        print(f"Hub JWT verification failed: {e}")
+        return None
+
+
+def get_hub_cookie(cookie_header):
+    """Extract the estreamly_token cookie value from a Cookie header string."""
+    if not cookie_header:
+        return None
+    for cookie in cookie_header.split(';'):
+        cookie = cookie.strip()
+        if cookie.startswith('estreamly_token='):
+            return cookie.split('=', 1)[1]
+    return None
+
+
 class ScrapeHandler(BaseHTTPRequestHandler):
     # Store the last generated filename for download
     last_csv_file = None
@@ -1211,6 +1287,38 @@ class ScrapeHandler(BaseHTTPRequestHandler):
             'created': datetime.now()
         }
         return session_id
+
+    def try_hub_sso(self):
+        """Try to authenticate via eStreamly Hub JWT cookie.
+        Returns (session_id, email) if hub JWT is valid and user is set up,
+        or None if hub auth is not enabled or no valid token found."""
+        if not USE_HUB_AUTH:
+            return None
+        cookie_header = self.headers.get('Cookie')
+        hub_token = get_hub_cookie(cookie_header)
+        if not hub_token:
+            return None
+        payload = verify_hub_jwt(hub_token)
+        if not payload:
+            return None
+        email = payload.get('email', '').strip().lower()
+        if not email:
+            return None
+        # Auto-authorize the hub user if not already in the database
+        if not is_authorized_email(email):
+            add_authorized_user(email)
+            print(f"Hub SSO: auto-authorized {email}")
+        # Create a local session
+        session_id = self.create_session(email)
+        return session_id, email
+
+    def hub_login_redirect(self):
+        """Redirect to the eStreamly Hub login page with a next parameter."""
+        current_url = APP_URL + self.path
+        redirect_url = f"{HUB_URL}/login?next={urllib.parse.quote(current_url, safe='')}"
+        self.send_response(302)
+        self.send_header('Location', redirect_url)
+        self.end_headers()
 
     def clear_session(self):
         """Clear the session cookie"""
@@ -1260,6 +1368,10 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 
         # Public endpoints that don't require auth
         if path == '/login' or self.path.startswith('/login'):
+            # If hub auth is enabled and user has no session, redirect to hub login
+            if USE_HUB_AUTH and not self.check_auth():
+                self.hub_login_redirect()
+                return
             self.send_response(200)
             self.send_header('Content-type', 'text/html; charset=utf-8')
             self.end_headers()
@@ -1301,7 +1413,20 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 
         # Check authentication for protected endpoints
         if not self.check_auth():
-            self.require_auth()
+            # Try hub SSO before falling back to local login
+            hub_result = self.try_hub_sso()
+            if hub_result:
+                session_id, email = hub_result
+                self.send_response(302)
+                self.send_header('Location', self.path)
+                self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                self.end_headers()
+                return
+            # No hub JWT either - redirect to hub login or local login
+            if USE_HUB_AUTH:
+                self.hub_login_redirect()
+            else:
+                self.require_auth()
             return
 
         if path == '/':
@@ -1396,7 +1521,19 @@ class ScrapeHandler(BaseHTTPRequestHandler):
         # Handle admin add user
         if path == '/admin/add':
             if not self.check_auth():
-                self.require_auth()
+                hub_result = self.try_hub_sso()
+                if hub_result:
+                    # Hub SSO succeeded but POST can't redirect cleanly; send to admin page
+                    session_id, _ = hub_result
+                    self.send_response(302)
+                    self.send_header('Location', '/admin')
+                    self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                    self.end_headers()
+                    return
+                if USE_HUB_AUTH:
+                    self.hub_login_redirect()
+                else:
+                    self.require_auth()
                 return
             email = self.get_session_email()
             if not is_super_user(email):
@@ -1431,7 +1568,18 @@ class ScrapeHandler(BaseHTTPRequestHandler):
         # Handle admin remove user
         if path == '/admin/remove':
             if not self.check_auth():
-                self.require_auth()
+                hub_result = self.try_hub_sso()
+                if hub_result:
+                    session_id, _ = hub_result
+                    self.send_response(302)
+                    self.send_header('Location', '/admin')
+                    self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                    self.end_headers()
+                    return
+                if USE_HUB_AUTH:
+                    self.hub_login_redirect()
+                else:
+                    self.require_auth()
                 return
             email = self.get_session_email()
             if not is_super_user(email):
@@ -1462,9 +1610,20 @@ class ScrapeHandler(BaseHTTPRequestHandler):
 
         # Check authentication for protected endpoints
         if not self.check_auth():
-            self.require_auth()
+            hub_result = self.try_hub_sso()
+            if hub_result:
+                session_id, _ = hub_result
+                self.send_response(302)
+                self.send_header('Location', '/')
+                self.send_header('Set-Cookie', f'session={session_id}; Path=/; HttpOnly')
+                self.end_headers()
+                return
+            if USE_HUB_AUTH:
+                self.hub_login_redirect()
+            else:
+                self.require_auth()
             return
-        
+
         try:
             # Read POST data
             content_length = int(self.headers['Content-Length'])
