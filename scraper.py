@@ -1406,7 +1406,10 @@ class ScrapeHandler(BaseHTTPRequestHandler):
         if path == '/logout':
             self.clear_session()
             self.send_response(302)
-            self.send_header('Location', '/login')
+            if USE_HUB_AUTH and HUB_URL:
+                self.send_header('Location', f'{HUB_URL}/logout')
+            else:
+                self.send_header('Location', '/login')
             self.send_header('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
             self.end_headers()
             return
