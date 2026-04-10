@@ -242,6 +242,61 @@ def clean_text(text):
     
     return text.strip()
 
+# Image formats supported by eStreamly
+SUPPORTED_IMAGE_FORMATS = {'jpg', 'jpeg', 'png', 'webp', 'gif'}
+# Unsupported formats that we know how to convert via URL manipulation
+UNSUPPORTED_IMAGE_FORMATS = {'avif', 'jxl', 'heic', 'heif', 'tiff', 'tif', 'bmp'}
+
+def normalize_image_url(url):
+    """Normalize image URL to ensure it uses a format supported by eStreamly.
+
+    Handles:
+    - Cloudinary f_auto / f_avif → f_jpg
+    - Imgix auto=format, fm=avif → fm=jpg
+    - Direct .avif/.heic/.jxl extensions → .jpg
+    - Other CDN auto-format parameters
+    """
+    if not url:
+        return url
+
+    original_url = url
+
+    # --- Cloudinary URLs ---
+    # Pattern: res.cloudinary.com/.../{transformations}/...
+    # f_auto or f_avif can appear as a path segment (/f_auto/) or in a comma-separated transform group
+    if 'cloudinary.com/' in url:
+        # Replace /f_auto/ or /f_avif/ path segments with /f_jpg/
+        url = re.sub(r'/f_(auto|avif|jxl|heic)/', '/f_jpg/', url)
+        # Replace f_auto or f_avif within comma-separated transform groups
+        # e.g., ar_469:587,c_fill,f_auto,w_768 → ar_469:587,c_fill,f_jpg,w_768
+        url = re.sub(r'(,|^)f_(auto|avif|jxl|heic)(,|/)', r'\1f_jpg\3', url)
+
+    # --- Imgix URLs ---
+    # Pattern: ?fm=avif or &fm=avif or ?auto=format
+    if 'imgix.net/' in url or 'imgix.com/' in url:
+        url = re.sub(r'([?&])fm=avif', r'\1fm=jpg', url)
+        url = re.sub(r'([?&])auto=format', r'\1auto=compress', url)
+
+    # --- Contentful Images API ---
+    # Pattern: ?fm=avif
+    if 'ctfassets.net/' in url or 'contentful.com/' in url:
+        url = re.sub(r'([?&])fm=avif', r'\1fm=jpg', url)
+
+    # --- Generic: direct .avif or other unsupported extensions ---
+    # Check if the URL path ends with an unsupported format
+    # Parse only the path portion (before query string)
+    path_part = url.split('?')[0]
+    ext_match = re.search(r'\.([a-zA-Z]+)$', path_part)
+    if ext_match:
+        ext = ext_match.group(1).lower()
+        if ext in UNSUPPORTED_IMAGE_FORMATS:
+            url = url[:ext_match.start()] + '.jpg' + url[len(path_part):]
+
+    if url != original_url:
+        print(f"  → Normalized image format: unsupported format converted to compatible format")
+
+    return url
+
 def scrape(url):
     """Scrape product information from a URL"""
     try:
@@ -533,7 +588,11 @@ def scrape(url):
                 if full_size != image:
                     print(f"  → Upgraded image: replaced dimension path")
                     image = full_size
-        
+
+        # Normalize image URL to ensure supported format (no .avif, no f_auto, etc.)
+        if image:
+            image = normalize_image_url(image)
+
         # Extract star ratings
         ratings = ""
 
